@@ -1,7 +1,6 @@
 import { useState, useEffect } from "react";
 import mqtt from "mqtt";
 import "./App.css";
-import bottomImage from "./Map.png";
 import amrImage from "./AMR_Image.png";
 import designReport from "./design_report.pdf";
 import userManual from "./user_manual.pdf";
@@ -9,10 +8,17 @@ import backgroundImage from "./background.png";
 import referenceDesign from "./referenceDesign.pdf";
 
 // MQTT broker configuration
-const MQTT_BROKER_URL = "ws://test.mosquitto.org:8080";
+const MQTT_BROKER_URL = "ws://test.mosquitto.org:8081"; // Change to your MQTT broker URL
 const MQTT_STATE_TOPIC = "amr/state";
 const MQTT_X_AXIS_TOPIC = "amr/coordinates/x-axis";
 const MQTT_Y_AXIS_TOPIC = "amr/coordinates/y-axis";
+const MQTT_IMAGE_TOPIC = "amr/map/image";
+
+interface ImageMetadata {
+  totalChunks: number;
+  totalSize: number;
+  currentChunk: number;
+}
 
 const App: React.FC = () => {
   const [isShrunk, setIsShrunk] = useState(false);
@@ -23,6 +29,14 @@ const App: React.FC = () => {
   const [targetPosition, setTargetPosition] = useState("");
   const [client, setClient] = useState<mqtt.MqttClient | null>(null);
   const [isConnected, setIsConnected] = useState(false);
+  const [receivedImage, setReceivedImage] = useState<string | null>(null);
+  const [imageProgress, setImageProgress] = useState(0);
+  const [imageMetadata, setImageMetadata] = useState<ImageMetadata | null>(
+    null
+  );
+  const [chunksReceived, setChunksReceived] = useState<Record<number, string>>(
+    {}
+  );
 
   // Initialize MQTT connection
   useEffect(() => {
@@ -30,7 +44,59 @@ const App: React.FC = () => {
 
     mqttClient.on("connect", () => {
       setIsConnected(true);
+      mqttClient.subscribe(MQTT_STATE_TOPIC);
+      mqttClient.subscribe(MQTT_X_AXIS_TOPIC);
+      mqttClient.subscribe(MQTT_Y_AXIS_TOPIC);
+      mqttClient.subscribe(MQTT_IMAGE_TOPIC, { qos: 1 });
       console.log("Connected to MQTT broker");
+    });
+
+    mqttClient.on("message", (topic, message) => {
+      const payload = message.toString();
+
+      if (topic === MQTT_IMAGE_TOPIC) {
+        try {
+          // Parse the message (format: "CHUNK:currentChunk:totalChunks:totalSize:base64Data")
+          const [
+            prefix,
+            currentChunkStr,
+            totalChunksStr,
+            totalSizeStr,
+            ...rest
+          ] = payload.split(":");
+          const base64Data = rest.join(":"); // In case there are colons in the base64 data
+
+          const currentChunk = parseInt(currentChunkStr);
+          const totalChunks = parseInt(totalChunksStr);
+          const totalSize = parseInt(totalSizeStr);
+
+          // Update metadata if not set or if changed
+          if (
+            !imageMetadata ||
+            imageMetadata.totalChunks !== totalChunks ||
+            imageMetadata.totalSize !== totalSize
+          ) {
+            setImageMetadata({
+              totalChunks,
+              totalSize,
+              currentChunk: 0,
+            });
+            setChunksReceived({});
+          }
+
+          // Store the chunk
+          setChunksReceived((prev) => ({
+            ...prev,
+            [currentChunk]: base64Data,
+          }));
+
+          // Update progress
+          const receivedCount = Object.keys(chunksReceived).length + 1;
+          setImageProgress(Math.round((receivedCount / totalChunks) * 100));
+        } catch (error) {
+          console.error("Error processing image chunk:", error);
+        }
+      }
     });
 
     mqttClient.on("error", (err) => {
@@ -50,6 +116,32 @@ const App: React.FC = () => {
       }
     };
   }, []);
+
+  // Check if all chunks have been received and assemble the image
+  useEffect(() => {
+    if (
+      imageMetadata &&
+      Object.keys(chunksReceived).length === imageMetadata.totalChunks
+    ) {
+      // Sort chunks by their index and concatenate the base64 strings
+      const sortedChunks = Object.entries(chunksReceived)
+        .sort(([a], [b]) => parseInt(a) - parseInt(b))
+        .map(([_, data]) => data)
+        .join("");
+
+      // Create the image URL
+      const imageUrl = `data:image/png;base64,${sortedChunks}`;
+      setReceivedImage(imageUrl);
+      setImageProgress(100);
+
+      // Reset for next image
+      setTimeout(() => {
+        setImageMetadata(null);
+        setChunksReceived({});
+        setImageProgress(0);
+      }, 3000);
+    }
+  }, [chunksReceived, imageMetadata]);
 
   // Shrink header whenever the user scrolls down (and expand at top)
   useEffect(() => {
@@ -98,10 +190,9 @@ const App: React.FC = () => {
     publishMessage(MQTT_STATE_TOPIC, "stop");
   };
 
-  // Updated publishMessage to accept topic parameter
   const publishMessage = (topic: string, message: string) => {
     if (client && isConnected) {
-      client.publish(topic, message, (err) => {
+      client.publish(topic, message, { qos: 1 }, (err) => {
         if (err) {
           console.error(`Error publishing to ${topic}:`, err);
         } else {
@@ -132,7 +223,7 @@ const App: React.FC = () => {
         <button className="hanging-button2" onClick={handleImageClick}>
           Design Report
         </button>
-        <h1 className="strip-title">AMR Controll - Team 1</h1>
+        <h1 className="strip-title">AMR Control - Team 1</h1>
         <img
           src={amrImage}
           alt="ROBOT"
@@ -147,13 +238,35 @@ const App: React.FC = () => {
         <div className="image-controls-container">
           {/* Bottom image container */}
           <div className="bottom-image-container">
-            <img src={bottomImage} alt="Information" className="bottom-image" />
+            {receivedImage ? (
+              <img
+                src={receivedImage}
+                alt="Received Map"
+                className="bottom-image"
+              />
+            ) : (
+              <div className="image-placeholder">
+                {imageProgress > 0 ? (
+                  <>
+                    <div className="progress-bar">
+                      <div
+                        className="progress-bar-fill"
+                        style={{ width: `${imageProgress}%` }}
+                      ></div>
+                    </div>
+                    <p>Receiving image: {imageProgress}%</p>
+                  </>
+                ) : (
+                  <p>No map image received yet</p>
+                )}
+              </div>
+            )}
             {targetPosition && (
               <div className="coordinates-display">{targetPosition}</div>
             )}
           </div>
 
-          {/* New controls section */}
+          {/* Controls section */}
           <div className="controls-section">
             <h3>AMR Controls</h3>
             <div className="control-buttons">
@@ -200,7 +313,7 @@ const App: React.FC = () => {
         </div>
 
         {/* Filler to enable scrolling */}
-        <div style={{ height: "65vh" }} />
+        <div style={{ height: "60vh" }} />
       </main>
     </div>
   );
