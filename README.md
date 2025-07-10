@@ -49,12 +49,8 @@ This repository contains a web-based user interface for controlling and monitori
 ## Screenshots
 
 <div align="center">
-
-![Robot Header](src/AMR_Image.png)
-
-|       Map Placeholder       |           Live Map with Pointer          |
-| :-------------------------: | :--------------------------------------: |
-| ![Placeholder](src/Map.png) | ![Mapped](src/map_with_ellipse_full.png) |
+ 
+![User Interface](UI_view.png)
 
 </div>
 
