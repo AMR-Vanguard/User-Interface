@@ -8,7 +8,7 @@ import backgroundImage from "./background.png";
 import referenceDesign from "./referenceDesign.pdf";
 
 // MQTT broker configuration
-const MQTT_BROKER_URL = "ws://test.mosquitto.org:8081"; // Change to your MQTT broker URL
+const MQTT_BROKER_URL = "ws://test.mosquitto.org:8081";
 const MQTT_STATE_TOPIC = "amr/state";
 const MQTT_X_AXIS_TOPIC = "amr/coordinates/x-axis";
 const MQTT_Y_AXIS_TOPIC = "amr/coordinates/y-axis";
@@ -20,12 +20,18 @@ interface ImageMetadata {
   currentChunk: number;
 }
 
+interface ClickCoordinates {
+  x: number;
+  y: number;
+}
+
 const App: React.FC = () => {
   const [isShrunk, setIsShrunk] = useState(false);
   const [coordinates, setCoordinates] = useState({
     x: 0,
     y: 0,
   });
+  const [clickCoords, setClickCoords] = useState<ClickCoordinates | null>(null);
   const [targetPosition, setTargetPosition] = useState("");
   const [client, setClient] = useState<mqtt.MqttClient | null>(null);
   const [isConnected, setIsConnected] = useState(false);
@@ -56,7 +62,6 @@ const App: React.FC = () => {
 
       if (topic === MQTT_IMAGE_TOPIC) {
         try {
-          // Parse the message (format: "CHUNK:currentChunk:totalChunks:totalSize:base64Data")
           const [
             prefix,
             currentChunkStr,
@@ -64,13 +69,12 @@ const App: React.FC = () => {
             totalSizeStr,
             ...rest
           ] = payload.split(":");
-          const base64Data = rest.join(":"); // In case there are colons in the base64 data
+          const base64Data = rest.join(":");
 
           const currentChunk = parseInt(currentChunkStr);
           const totalChunks = parseInt(totalChunksStr);
           const totalSize = parseInt(totalSizeStr);
 
-          // Update metadata if not set or if changed
           if (
             !imageMetadata ||
             imageMetadata.totalChunks !== totalChunks ||
@@ -84,13 +88,11 @@ const App: React.FC = () => {
             setChunksReceived({});
           }
 
-          // Store the chunk
           setChunksReceived((prev) => ({
             ...prev,
             [currentChunk]: base64Data,
           }));
 
-          // Update progress
           const receivedCount = Object.keys(chunksReceived).length + 1;
           setImageProgress(Math.round((receivedCount / totalChunks) * 100));
         } catch (error) {
@@ -123,18 +125,15 @@ const App: React.FC = () => {
       imageMetadata &&
       Object.keys(chunksReceived).length === imageMetadata.totalChunks
     ) {
-      // Sort chunks by their index and concatenate the base64 strings
       const sortedChunks = Object.entries(chunksReceived)
         .sort(([a], [b]) => parseInt(a) - parseInt(b))
         .map(([_, data]) => data)
         .join("");
 
-      // Create the image URL
       const imageUrl = `data:image/png;base64,${sortedChunks}`;
       setReceivedImage(imageUrl);
       setImageProgress(100);
 
-      // Reset for next image
       setTimeout(() => {
         setImageMetadata(null);
         setChunksReceived({});
@@ -143,19 +142,48 @@ const App: React.FC = () => {
     }
   }, [chunksReceived, imageMetadata]);
 
-  // Shrink header whenever the user scrolls down (and expand at top)
+  // Shrink header whenever the user scrolls down
   useEffect(() => {
     const handleScroll = () => {
       setIsShrunk(window.scrollY > 0);
     };
     window.addEventListener("scroll", handleScroll);
-    // initialize state in case page isn't at top
     handleScroll();
     return () => window.removeEventListener("scroll", handleScroll);
   }, []);
 
-  const handleImageClick = () => {
-    window.open(designReport, "_blank");
+  const handleImageClick = (e: React.MouseEvent<HTMLImageElement>) => {
+    if (!receivedImage) {
+      window.open(designReport, "_blank");
+      return;
+    }
+
+    const img = e.currentTarget;
+    const rect = img.getBoundingClientRect();
+
+    // Calculate click position relative to image center
+    const clickX = e.clientX - rect.left;
+    const clickY = e.clientY - rect.top;
+
+    // Calculate normalized coordinates (-1 to 1)
+    const normalizedX = (clickX / rect.width) * 2 - 1;
+    const normalizedY = 1 - (clickY / rect.height) * 2; // Invert Y axis
+
+    // Convert to our coordinate system (-250 to 250)
+    const coordX = Math.round(normalizedX * 250);
+    const coordY = Math.round(normalizedY * 250);
+
+    // Calculate real-world coordinates (each unit = 5cm)
+    const realX = coordX * 5;
+    const realY = coordY * 5;
+
+    setClickCoords({ x: coordX, y: coordY });
+    setCoordinates({ x: coordX, y: coordY });
+
+    // Update the target position display
+    setTargetPosition(
+      `Target: (${coordX}, ${coordY}) [${realX}cm, ${realY}cm]`
+    );
   };
 
   const handleImageClick2 = () => {
@@ -164,6 +192,10 @@ const App: React.FC = () => {
 
   const handleImageClick3 = () => {
     window.open(referenceDesign, "_blank");
+  };
+
+  const handleImageClick4 = () => {
+    window.open(designReport, "_blank");
   };
 
   const handleCoordinateChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -177,7 +209,6 @@ const App: React.FC = () => {
   const handleSetPosition = () => {
     setTargetPosition(`Target: (${coordinates.x}, ${coordinates.y})`);
     publishMessage(MQTT_STATE_TOPIC, "start");
-    // Publish coordinates to their respective topics
     publishMessage(MQTT_X_AXIS_TOPIC, coordinates.x.toString());
     publishMessage(MQTT_Y_AXIS_TOPIC, coordinates.y.toString());
   };
@@ -215,12 +246,11 @@ const App: React.FC = () => {
         minHeight: "100vh",
       }}
     >
-      {/* Fixed header at top, shrinks when scrolled */}
       <header className={`top-strip ${isShrunk ? "small" : ""}`}>
         <button className="hanging-button" onClick={handleImageClick2}>
           User Manual
         </button>
-        <button className="hanging-button2" onClick={handleImageClick}>
+        <button className="hanging-button2" onClick={handleImageClick4}>
           Design Report
         </button>
         <h1 className="strip-title">AMR Control - Team 1</h1>
@@ -233,17 +263,30 @@ const App: React.FC = () => {
         />
       </header>
 
-      {/* Main content below header */}
       <main className={`content ${isShrunk ? "small-padding" : ""}`}>
         <div className="image-controls-container">
-          {/* Bottom image container */}
           <div className="bottom-image-container">
             {receivedImage ? (
-              <img
-                src={receivedImage}
-                alt="Received Map"
-                className="bottom-image"
-              />
+              <div style={{ position: "relative" }}>
+                <img
+                  src={receivedImage}
+                  alt="Received Map"
+                  className="bottom-image"
+                  onClick={handleImageClick}
+                  style={{ cursor: "crosshair" }}
+                />
+                {clickCoords && (
+                  <div
+                    className="coordinate-pointer"
+                    style={{
+                      left: `${((clickCoords.x + 250) / 500) * 100}%`,
+                      top: `${((250 - clickCoords.y) / 500) * 100}%`,
+                    }}
+                  >
+                    <div className="pointer-dot"></div>
+                  </div>
+                )}
+              </div>
             ) : (
               <div className="image-placeholder">
                 {imageProgress > 0 ? (
@@ -266,7 +309,6 @@ const App: React.FC = () => {
             )}
           </div>
 
-          {/* Controls section */}
           <div className="controls-section">
             <h3>AMR Controls</h3>
             <div className="control-buttons">
@@ -283,6 +325,8 @@ const App: React.FC = () => {
                     value={coordinates.x}
                     onChange={handleCoordinateChange}
                     className="coord-input"
+                    min="-250"
+                    max="250"
                   />
                 </div>
 
@@ -294,6 +338,8 @@ const App: React.FC = () => {
                     value={coordinates.y}
                     onChange={handleCoordinateChange}
                     className="coord-input"
+                    min="-250"
+                    max="250"
                   />
                 </div>
 
@@ -312,7 +358,6 @@ const App: React.FC = () => {
           </div>
         </div>
 
-        {/* Filler to enable scrolling */}
         <div style={{ height: "60vh" }} />
       </main>
     </div>
